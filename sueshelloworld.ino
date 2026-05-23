@@ -1,6 +1,7 @@
 /*
   ESP32-CAM + Teachable Machine 手势识别
   基于 TensorFlowLite_ESP32 的 hello_world 示例修改
+  支持串口发送手势指令 (0/1/2)
 */
 
 #include <TensorFlowLite_ESP32.h>
@@ -15,7 +16,22 @@
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-// #include "tensorflow/lite/version.h"
+
+// ========== 新增：手势标签到指令的映射 ==========
+// 请根据你的 Teachable Machine 实际标签名称修改
+struct GestureMapping {
+  const char* label;
+  uint8_t cmd;
+};
+
+// 修改这里的标签名称，使其与你的模型输出一致
+GestureMapping gestureMappings[] = {
+  {"Fisthand", 0},      // 握拳 → 坐下
+  {"Openhand", 1},      // 手掌 → 站立
+  {"Vhand", 2},     // V形 → 跳跃
+};
+
+const int gestureCount = sizeof(gestureMappings) / sizeof(gestureMappings[0]);
 
 // ========== ESP32-CAM 引脚定义 ==========
 #define PWDN_GPIO_NUM     32
@@ -35,7 +51,7 @@
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-// ========== TF Lite 全局变量（hello_world 风格）==========
+// ========== TF Lite 全局变量 ==========
 namespace {
 tflite::ErrorReporter* error_reporter = nullptr;
 const tflite::Model* model = nullptr;
@@ -43,10 +59,37 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-// 内存池大小（如果内存不够可以适当调小）
+// 内存池大小
 constexpr int kTensorArenaSize = 90 * 1024;
 uint8_t tensor_arena[kTensorArenaSize];
 }  // namespace
+
+// ========== 新增：根据标签查找对应的指令 ==========
+int findGestureCommand(const char* label) {
+  for (int i = 0; i < gestureCount; i++) {
+    if (strcmp(label, gestureMappings[i].label) == 0) {
+      return gestureMappings[i].cmd;
+    }
+  }
+  return -1;  // 未找到
+}
+
+// ========== 新增：发送手势指令 ==========
+void sendGestureCommand(uint8_t cmd) {
+  // 发送原始字节指令
+  Serial.write(cmd);
+  
+  // 打印发送内容（方便调试）
+  Serial.print(" [发送指令: ");
+  Serial.print(cmd);
+  switch(cmd) {
+    case 0: Serial.print(" - 坐下"); break;
+    case 1: Serial.print(" - 站立"); break;
+    case 2: Serial.print(" - 跳跃"); break;
+    default: break;
+  }
+  Serial.println("]");
+}
 
 // ========== 摄像头初始化 ==========
 void init_camera() {
@@ -86,13 +129,14 @@ void init_camera() {
 // ========== 主程序 setup ==========
 void setup() {
   Serial.begin(115200);
-  while (!Serial);  // 等待串口连接（调试用）
+  while (!Serial);
   Serial.println("ESP32-CAM 手势识别启动");
+  Serial.println("串口已初始化，波特率: 115200");
 
   // 1. 摄像头
   init_camera();
 
-  // 2. TF Lite 初始化（完全按照 hello_world 的风格）
+  // 2. TF Lite 初始化
   static tflite::MicroErrorReporter micro_error_reporter;
   error_reporter = &micro_error_reporter;
 
@@ -102,7 +146,7 @@ void setup() {
     return;
   }
 
-  // 只注册模型真正需要的操作（如果缺某个算子，编译会报错，到时再加）
+  // 注册模型需要的操作
   static tflite::MicroMutableOpResolver<6> resolver;
   resolver.AddAveragePool2D();
   resolver.AddConv2D();
@@ -148,7 +192,7 @@ void loop() {
     return;
   }
 
-  // 解析输出（3 个类别）
+  // 解析输出（kCategoryCount 个类别）
   int8_t max_score = -128;
   int max_index = 0;
   Serial.println("=== 识别结果 ===");
@@ -163,7 +207,16 @@ void loop() {
   }
 
   if ((max_score + 128) > 128) {  // 置信度 > 50%
-    Serial.printf(">>> 手势: %s\n", kCategoryLabels[max_index]);
+    const char* detected_gesture = kCategoryLabels[max_index];
+    Serial.printf(">>> 手势: %s\n", detected_gesture);
+    
+    // ========== 新增：查找指令并发送 ==========
+    int cmd = findGestureCommand(detected_gesture);
+    if (cmd != -1) {
+      sendGestureCommand((uint8_t)cmd);
+    } else {
+      Serial.println(">>> 未匹配到指令（该手势未映射）");
+    }
   } else {
     Serial.println(">>> 未识别");
   }
