@@ -2,6 +2,7 @@
   ESP32-CAM + Teachable Machine 手势识别
   基于 TensorFlowLite_ESP32 的 hello_world 示例修改
   支持串口发送手势指令 (0/1/2)
+  支持显示识别耗时
 */
 
 #include <TensorFlowLite_ESP32.h>
@@ -172,6 +173,9 @@ void setup() {
 
 // ========== 主循环 loop ==========
 void loop() {
+  // ========== 开始计时 ==========
+  unsigned long startTime = millis();
+  
   // 拍照
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
@@ -179,18 +183,27 @@ void loop() {
     delay(1000);
     return;
   }
+  
+  // 记录拍照完成时间
+  unsigned long captureTime = millis();
 
   // 灰度 + 归一化到 int8（-128 ~ 127）
   for (int i = 0; i < kNumCols * kNumRows; i++) {
     input->data.int8[i] = (int8_t)(fb->buf[i] - 128);
   }
   esp_camera_fb_return(fb);
+  
+  // 记录预处理完成时间
+  unsigned long preprocessTime = millis();
 
   // 推理
   if (interpreter->Invoke() != kTfLiteOk) {
     Serial.println("推理失败");
     return;
   }
+  
+  // 记录推理完成时间
+  unsigned long inferenceTime = millis();
 
   // 解析输出（kCategoryCount 个类别）
   int8_t max_score = -128;
@@ -210,7 +223,7 @@ void loop() {
     const char* detected_gesture = kCategoryLabels[max_index];
     Serial.printf(">>> 手势: %s\n", detected_gesture);
     
-    // ========== 新增：查找指令并发送 ==========
+    // 查找指令并发送
     int cmd = findGestureCommand(detected_gesture);
     if (cmd != -1) {
       sendGestureCommand((uint8_t)cmd);
@@ -220,6 +233,19 @@ void loop() {
   } else {
     Serial.println(">>> 未识别");
   }
+  
+  // 记录发送完成时间
+  unsigned long sendTime = millis();
+  
+  // ========== 输出时间统计 ==========
+  Serial.println("----------------------------------------");
+  Serial.println("【识别耗时统计】");
+  Serial.printf("拍照耗时: %lu ms\n", captureTime - startTime);
+  Serial.printf("预处理耗时: %lu ms\n", preprocessTime - captureTime);
+  Serial.printf("推理耗时: %lu ms\n", inferenceTime - preprocessTime);
+  Serial.printf("发送耗时: %lu ms\n", sendTime - inferenceTime);
+  Serial.printf("总耗时: %lu ms\n", sendTime - startTime);
+  Serial.println("========================================");
 
   delay(2000);
 }
